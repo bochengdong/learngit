@@ -1,0 +1,154 @@
+#!/bin/bash
+# -*- coding: utf-8 -*-
+# @Time    : 2020/12/03 16:00
+# @Author  : cheng
+# @Email   : 771535427@qq.com
+# @File    : yozoctl
+
+set -e
+trap "exit" 2
+scriptPath=$(dirname "$(readlink -f "$0")")
+
+# 安装的应用和中间件服务数组
+# services=$(ls -F $scriptPath/|grep "/$"|grep -Ev "common|tongweb"|xargs -I x basename $"x")
+# dcc fonts
+services=(java node redis zookeeper elasticsearch database openresty pulse tongweb converter epauth epdrive fcsserver fileserver weboffice fonts template)
+
+parameterList=()
+ipaddressList=()
+
+function ip_check() {
+
+    # 检查输入ip是否符合要求
+    set +e
+    ipcalc -cs "$1"
+    if [[ ! $? -eq 0 ]];then
+        echo -e "***********************************************"
+        echo -e "\e[01;31m*            $2[IP]: $1 is invalid!             *\e[0m"
+        echo -e "***********************************************"
+        exit 111
+    fi
+    set -e
+}
+
+function ipaddressHandle(){
+    # 获取安装应用或中间件所有需要配置ip
+    # shellcheck disable=SC2068
+    for i in ${parameterList[@]};do
+        unset ipTempList
+#        ipTempList=$(bash "$scriptPath"/"$i"/command ipaddress 2> /dev/null)
+        # $?为0表示执行成功，需要配置其他应用和中间件ip地址，非0表示执行失败没有ipaddress方法
+        if ipTempList=$(bash "$scriptPath"/"$i"/command ipaddress 2> /dev/null);then
+            for j in ${ipTempList[@]};do
+                # 判断$j是否在ipaddressList数组中，在跳出本次循环，不再在追加
+                # shellcheck disable=SC2199
+                [[ ${ipaddressList[@]/${j}/} != "${ipaddressList[@]}" ]] && continue || ipaddressList[${#ipaddressList[*]}]=$j
+            done
+        fi
+    done
+}
+
+function parameterHandle(){
+
+    # 参数数量判断，小于2无效
+    if [ "$#" -lt 2 ];then
+        echo "Usage: $0 (install|remove) (all|java node redis...)"
+        exit
+    elif [ "$#" -eq 2 ];then
+        # 参数数量等于2，直接赋值数组
+        # $2等于all表示单机安装，将parameterList数组赋值为services数组内容
+        # shellcheck disable=SC2199
+        if [ "$2" == all ];then
+            parameterList=("${services[@]}")
+        elif [[ ${services[@]/${2}/} == "${services[@]}" ]];then
+            echo "Usage: $0 (install|remove) (all|java node redis...)"
+            exit
+        else
+            # $2不等于all,表示只安装$2应用或中间件
+            parameterList[0]=$2
+        fi
+    else
+        # ./yozoctl.aarch.last java node redis tongweb openresty elasticsearch database converter epauth epdrive fcsserver fileserver openresty pulse
+        # 从第二个参数开始循环，将参数添加到parameterList数组并去重
+        # shellcheck disable=SC2068
+        for i in ${@:2};do
+            # 判断参数数量大于3的是否还包含all,包含则冲突退出执行程序
+            if [ "$i" == "all" ];then
+                echo "Usage: $0 (install|remove) (all|java node redis...)"
+                exit
+            fi
+            # shellcheck disable=SC2199
+            if [[ ${services[@]/${i}/} != "${services[@]}" ]];then
+                [[ ${parameterList[@]/${i}/} != "${parameterList[@]}" ]] && continue || parameterList[${#parameterList[*]}]=$i
+            else
+                echo "$i 不在安装列表中"
+                echo "Usage: $0 (install|remove) (all|java node redis...)"
+                exit
+            fi
+        done
+    fi
+}
+
+function service_install(){
+    ipaddressHandle
+    if [ "$1" == "all" ];then
+        # all表示单机部署，所有IP可以设置为服务器本机IP
+        printf "\033[33m%20s: \033[0m" "部署服务器 [IP] 地址"
+        read -r server_ip
+        # shellcheck disable=SC2068
+        for i in ${ipaddressList[@]};do
+            # $i: redis_ip elasticsearch_ip ...
+            export "$i"="$server_ip"
+        done
+    else
+        # 不是all表示多机部署，各服务部署需要指定IP
+        for i in "${ipaddressList[@]}";do
+            # $i: redis_ip elasticsearch_ip ...
+            # ${i%_*} 保留_左边字符：redis_ip--->redis
+            printf "\033[33m%20s: \033[0m" "${i%_*} IP地址"
+            read -r server_ip
+            export "$i"="$server_ip"
+        done
+    fi
+
+    # 安装通用工具
+    bash "$scriptPath"/common/command
+    source /etc/profile
+
+    for i in "${parameterList[@]}";do
+        if [ -e "$scriptPath"/"$i".flag ];then
+            printf "\033[35m%-25s%-50s*\033[0m\n" "*" "$i 已安装！"
+            continue
+        fi
+        bash "$scriptPath"/"$i"/command install
+        touch "$scriptPath"/flag/"$i".flag
+    done
+}
+
+function service_remove(){
+        set +e
+    for i in "${parameterList[@]}";do
+        bash "$scriptPath"/"$i"/command remove
+        rm -rf "$scriptPath"/flag/"$i".flag
+    done
+    set -e
+}
+
+
+function run(){
+    parameterHandle "$@"
+    # 判断参数1是否是install或remove
+    case $1 in
+        install)
+
+            service_install $2
+            ;;
+        remove)
+            service_remove
+            ;;
+        *)
+            echo "Usage: $0 (install|remove) (all|java node redis...)"
+            exit
+    esac
+}
+
